@@ -1,4 +1,4 @@
-From: Martin <martin@fastcure.de>
+From: Martin <Spunky84@users.noreply.github.com>
 Subject: [PATCH] mt76: fix scheduling while atomic on PREEMPT_RT kernels
 
 The __mt76_worker_fn() function uses set_current_state(TASK_INTERRUPTIBLE)
@@ -19,7 +19,7 @@ when idle instead of blocking via the scheduler.
 The slightly higher idle CPU cost (~0.1%) is negligible compared to the
 complete driver failure on RT kernels.
 
-Signed-off-by: Martin <martin@fastcure.de>
+Signed-off-by: Martin <Spunky84@users.noreply.github.com>
 ---
  drivers/net/wireless/mediatek/mt76/util.c | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)
