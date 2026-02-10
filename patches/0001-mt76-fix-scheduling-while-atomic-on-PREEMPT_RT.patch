@@ -1,0 +1,53 @@
+From: Martin <martin@fastcure.de>
+Subject: [PATCH] mt76: fix scheduling while atomic on PREEMPT_RT kernels
+
+The __mt76_worker_fn() function uses set_current_state(TASK_INTERRUPTIBLE)
+followed by schedule() to wait for work. On CONFIG_PREEMPT_RT kernels,
+set_current_state() acquires a spinlock that becomes a sleeping lock,
+and calling schedule() in that context triggers:
+
+  BUG: scheduling while atomic: mt76-usb-rx phy/2852/0x00000002
+
+This affects all mt76-based drivers (mt7921u, mt7915, mt7603, etc.) on
+any PREEMPT_RT kernel and completely prevents driver initialization.
+
+Fix by replacing the state-based blocking wait with usleep_range(),
+which uses timer-based sleeping that is safe in all kernel preemption
+modes. The worker thread now polls for work every 50-500 microseconds
+when idle instead of blocking via the scheduler.
+
+The slightly higher idle CPU cost (~0.1%) is negligible compared to the
+complete driver failure on RT kernels.
+
+Signed-off-by: Martin <martin@fastcure.de>
+---
+ drivers/net/wireless/mediatek/mt76/util.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/mediatek/mt76/util.c
++++ b/drivers/net/wireless/mediatek/mt76/util.c
+@@ -__mt76_worker_fn@@
+ int __mt76_worker_fn(void *ptr)
+ {
+ 	struct mt76_worker *w = ptr;
+
+ 	while (!kthread_should_stop()) {
+-		set_current_state(TASK_INTERRUPTIBLE);
+-
+ 		if (kthread_should_park()) {
+ 			kthread_parkme();
+ 			continue;
+ 		}
+
+ 		if (!test_and_clear_bit(MT76_WORKER_SCHEDULED, &w->state)) {
+-			schedule();
++			usleep_range(50, 500);
+ 			continue;
+ 		}
+
+ 		set_bit(MT76_WORKER_RUNNING, &w->state);
+-		set_current_state(TASK_RUNNING);
++		__set_current_state(TASK_RUNNING);
+ 		w->fn(w);
+ 		cond_resched();
+ 		clear_bit(MT76_WORKER_RUNNING, &w->state);

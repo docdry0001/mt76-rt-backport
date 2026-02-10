@@ -1,0 +1,17 @@
+		    GNU GENERAL PUBLIC LICENSE
+		       Version 2, June 1991
+
+ Copyright (C) 1989, 1991 Free Software Foundation, Inc.,
+ 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+The mt76 driver source code is licensed under Dual BSD/GPL
+(as per the upstream OpenWrt/Linux kernel project).
+
+The build tooling, patches, and scripts in this repository
+are licensed under GPL-2.0, consistent with the Linux kernel
+licensing requirements for derivative works.
+
+See https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+for the full GPL-2.0 license text.
