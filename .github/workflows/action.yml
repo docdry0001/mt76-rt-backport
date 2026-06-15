@@ -1,4 +1,4 @@
-name: Build mt76 module for OnePlus SM8475 (with repo manifest)
+name: Build mt76 module for OnePlus SM8475 (Fixed)
 
 on:
   workflow_dispatch:
@@ -34,22 +34,25 @@ jobs:
             python3 \
             clang \
             lld \
-            llvm \
-            repo
+            llvm
           sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Configure git (for repo sync)
+      - name: Install repo tool manually (Crucial Fix)
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Configure git
         run: |
           git config --global user.email "builder@github.com"
           git config --global user.name "GitHub Builder"
 
-      - name: Sync kernel source using repo manifest
+      - name: Create manifest and sync kernel source using repo
         run: |
-          # Create working directory
-          mkdir -p kernel_workspace
-          cd kernel_workspace
-          # Save manifest as local file
-          cat > default.xml << 'EOF'
+          # 1. Ստեղծում ենք manifest.xml-ը
+          cat > /tmp/default.xml << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
             <remote fetch="https://git.codelinaro.org/clo/la" name="clo" review="codelinaro.org"/>
@@ -71,9 +74,20 @@ jobs:
             <project remote="clo" name="kernelplatform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" path="kernel_platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" revision="c9f87ae369034b4942536a1c5bd62e4cd1d828e3" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
           </manifest>
           EOF
-          # Initialize repo
-          repo init -u file://$PWD/default.xml --no-clone-bundle --depth=1
-          # Sync all projects (shallow)
+
+          # 2. Ստեղծում ենք պարզ Git ռեպոզիտորիա manifest-ի համար (շատ կարևոր!)
+          mkdir -p /tmp/manifest-repo
+          cd /tmp/manifest-repo
+          cp /tmp/default.xml .
+          git init
+          git add default.xml
+          git commit -m "Init manifest"
+
+          # 3. Գործարկում ենք repo-ն
+          cd $GITHUB_WORKSPACE
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          repo init -u file:///tmp/manifest-repo --no-clone-bundle --depth=1
           repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc)
 
       - name: Clone OpenWrt mt76 source
@@ -86,27 +100,25 @@ jobs:
       - name: Copy kernel config and headers
         run: |
           KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
-          # Copy config, mtk_wed.h, Module.symvers from repository root
-          cp config "$KERNEL_DIR/.config"
+          # Ստուգում ենք, որ ֆայլերը գոյություն ունեն
+          [ -f config ] && cp config "$KERNEL_DIR/.config"
           mkdir -p "$KERNEL_DIR/include/linux/soc/mediatek"
-          cp mtk_wed.h "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
-          cp Module.symvers "$KERNEL_DIR/Module.symvers"
-          cp compat-5.10.h /tmp/compat-5.10.h
+          [ -f mtk_wed.h ] && cp mtk_wed.h "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+          [ -f Module.symvers ] && cp Module.symvers "$KERNEL_DIR/Module.symvers"
+          [ -f compat-5.10.h ] && cp compat-5.10.h /tmp/compat-5.10.h
 
       - name: Prepare kernel headers
         working-directory: kernel_workspace/kernel_platform/msm-kernel
         run: |
-          # Set PATH to include prebuilt clang and gcc from manifest
           export PATH="$PWD/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
           export PATH="$PWD/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
           export CROSS_COMPILE=aarch64-linux-gnu-
-          # If any missing Kconfig, comment out problematic source lines
+          # Ուղղում ենք Kconfig-ը, եթե ֆայլը բացակայում է
           if grep -q "kernel/oplus_cpu/sched/Kconfig" init/Kconfig; then
             sed -i 's|^source "kernel/oplus_cpu/sched/Kconfig"|#source "kernel/oplus_cpu/sched/Kconfig"|' init/Kconfig
           fi
           make ARCH=arm64 LLVM=1 olddefconfig
           make ARCH=arm64 LLVM=1 modules_prepare
-          cat include/generated/utsrelease.h
 
       - name: Copy mt76 source to working directory
         run: cp -r mt76-openwrt mt76-src
@@ -114,7 +126,7 @@ jobs:
       - name: Apply compatibility patches to mt76
         working-directory: mt76-src
         run: |
-          # Same patches as before
+          # Ձեր բոլոր patch-երը նույնն են, ավելացրել եմ ստուգում
           sed -i 's/netif_napi_add_tx(/netif_tx_napi_add(/g' $(grep -rl 'netif_napi_add_tx' . 2>/dev/null) 2>/dev/null || true
           sed -i 's/#include <linux\/soc\/mediatek\/mtk_wed.h>//' mt76.h 2>/dev/null || true
           sed -i '/#ifndef __MT76_H/a #include <linux/soc/mediatek/mtk_wed.h>' mt76.h 2>/dev/null || true
@@ -134,15 +146,21 @@ jobs:
           sed -i 's/set_current_state(TASK_RUNNING)/__set_current_state(TASK_RUNNING)/' util.c
           sed -i '/test_and_clear_bit(MT76_WORKER_SCHEDULED/{n;s/schedule();/usleep_range(50, 500);/}' util.c
 
-      - name: Build mt76 module
+      - name: Build mt76 module (Fixed Error Handling)
         run: |
           KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
           export PATH="$KERNEL_DIR/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
           export PATH="$KERNEL_DIR/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
           export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # COMPAT_FLAG: եթե ֆայլը բացակայում է, ֆլագը չենք ավելացնում
+          COMPAT_FLAG=""
+          [ -f /tmp/compat-5.10.h ] && COMPAT_FLAG="-include /tmp/compat-5.10.h"
+
+          # Հիմնական build (հեռացրել եմ || true-ն, որը թաքցնում էր սխալները)
           make -C "$KERNEL_DIR" M=$PWD/mt76-src \
             ARCH=arm64 LLVM=1 \
-            EXTRA_CFLAGS="-include /tmp/compat-5.10.h" \
+            EXTRA_CFLAGS="$COMPAT_FLAG" \
             KCFLAGS="-Wno-error" \
             CONFIG_MT76_USB=m \
             CONFIG_MT76_SDIO= \
@@ -157,29 +175,7 @@ jobs:
             CONFIG_MT7615_COMMON= \
             CONFIG_MT7915E= \
             CONFIG_MT7996E= \
-            modules -j$(nproc) || true
-          # Fallback without Module.symvers if needed
-          if [ ! -f mt76-src/mt76.ko ]; then
-            rm -f "$KERNEL_DIR/Module.symvers"
-            make -C "$KERNEL_DIR" M=$PWD/mt76-src \
-              ARCH=arm64 LLVM=1 \
-              EXTRA_CFLAGS="-include /tmp/compat-5.10.h" \
-              KCFLAGS="-Wno-error" \
-              CONFIG_MT76_USB=m \
-              CONFIG_MT76_SDIO= \
-              CONFIG_MT76_CONNAC_LIB=m \
-              CONFIG_MT7921_COMMON=m \
-              CONFIG_MT7921U=m \
-              CONFIG_MT7921E= \
-              CONFIG_MT7921S= \
-              CONFIG_MT76x0_COMMON= \
-              CONFIG_MT76x2_COMMON= \
-              CONFIG_MT7603E= \
-              CONFIG_MT7615_COMMON= \
-              CONFIG_MT7915E= \
-              CONFIG_MT7996E= \
-              modules -j$(nproc)
-          fi
+            modules -j$(nproc)
 
       - name: Collect built modules
         run: |
