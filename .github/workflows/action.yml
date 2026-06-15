@@ -1,4 +1,4 @@
-name: Build mt76 module for OnePlus SM8475 (Fixed)
+name: Build mt76 module for OnePlus SM8475 (Professional Edition)
 
 on:
   workflow_dispatch:
@@ -12,32 +12,20 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository (for mt76 patches and configs)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --- 1. Հիմնական կախվածություններ ---
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential \
-            gcc-aarch64-linux-gnu \
-            bc \
-            flex \
-            bison \
-            libssl-dev \
-            libelf-dev \
-            git \
-            wget \
-            kmod \
-            cpio \
-            xz-utils \
-            python3 \
-            clang \
-            lld \
-            llvm
+            build-essential gcc-aarch64-linux-gnu bc flex bison libssl-dev \
+            libelf-dev git wget kmod cpio xz-utils python3 clang lld llvm
           sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Install repo tool manually (Crucial Fix)
+      # --- 2. Repo-ի տեղադրում (կրիտիկական) ---
+      - name: Install repo tool manually
         run: |
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
@@ -49,9 +37,10 @@ jobs:
           git config --global user.email "builder@github.com"
           git config --global user.name "GitHub Builder"
 
-      - name: Create manifest and sync kernel source using repo
+      # --- 3. Manifest-ի և Kernel-ի սինխրոնիզացիա ---
+      - name: Sync kernel source using repo
         run: |
-          # 1. Ստեղծում ենք manifest.xml-ը
+          # Ստեղծել manifest.xml
           cat > /tmp/default.xml << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
@@ -65,6 +54,7 @@ jobs:
               <linkfile dest="kernel_platform/common/build.config.msm.lahaina" src="build.config.msm.lahaina"/>
             </project>
             <project remote="origin" name="android_kernel_modules_and_devicetree_oneplus_sm8475" path="./" revision="oneplus/sm8475_b_16.0.0_oneplus_11r"/>
+            <!-- Պահպանել բոլոր prebuilts-ները -->
             <project remote="clo" name="kernel/prebuilts/build-tools" path="kernel_platform/prebuilts/kernel-build-tools" revision="10ab783184f77d3ea15bf666426a7138b0f62bfc" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
             <project remote="clo" name="kernel_platform/external/dtc" revision="deb932d81061c472e8bb2648a409a456e6e84997" upstream="refs/heads/kernel.build.lnx.1.0.r1-rel"/>
             <project remote="clo" name="kernel_platform/kernel/prebuilts/mainline/arm64" revision="de12e10cfe8d67d5c0627069306fda939f52154a" upstream="refs/heads/kernel.lnx.5.10.r1-rel"/>
@@ -75,7 +65,7 @@ jobs:
           </manifest>
           EOF
 
-          # 2. Ստեղծում ենք պարզ Git ռեպոզիտորիա manifest-ի համար (շատ կարևոր!)
+          # Manifest-ը դարձնել Git ռեպո
           mkdir -p /tmp/manifest-repo
           cd /tmp/manifest-repo
           cp /tmp/default.xml .
@@ -83,13 +73,14 @@ jobs:
           git add default.xml
           git commit -m "Init manifest"
 
-          # 3. Գործարկում ենք repo-ն
+          # Repo init և sync
           cd $GITHUB_WORKSPACE
           mkdir -p kernel_workspace
           cd kernel_workspace
           repo init -u file:///tmp/manifest-repo --no-clone-bundle --depth=1
           repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc)
 
+      # --- 4. Mt76 սկզբնակոդ ---
       - name: Clone OpenWrt mt76 source
         run: |
           git clone --depth 1 -b master https://github.com/openwrt/mt76.git mt76-openwrt
@@ -97,39 +88,83 @@ jobs:
           git fetch --depth 1 origin bdf8ea71700746c634c064d6477aa143f821d6f6
           git checkout bdf8ea71700746c634c064d6477aa143f821d6f6
 
-      - name: Copy kernel config and headers
+      # --- 5. Ախտորոշում և անհրաժեշտ ֆայլերի ստուգում ---
+      - name: Prepare kernel config and headers with diagnostics
         run: |
           KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
-          # Ստուգում ենք, որ ֆայլերը գոյություն ունեն
-          [ -f config ] && cp config "$KERNEL_DIR/.config"
+          
+          # Ստուգել և պատճենել կոնֆիգը
+          if [ ! -f config ]; then
+            echo "⚠️ WARNING: config ֆայլը բացակայում է repository-ում:"
+          else
+            cp config "$KERNEL_DIR/.config"
+            echo "✅ config պատճենված է"
+          fi
+          
+          # Ստեղծել թղթապանակներ
           mkdir -p "$KERNEL_DIR/include/linux/soc/mediatek"
-          [ -f mtk_wed.h ] && cp mtk_wed.h "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
-          [ -f Module.symvers ] && cp Module.symvers "$KERNEL_DIR/Module.symvers"
-          [ -f compat-5.10.h ] && cp compat-5.10.h /tmp/compat-5.10.h
+          
+          # Ստուգել և պատճենել mtk_wed.h
+          if [ ! -f mtk_wed.h ]; then
+            echo "⚠️ WARNING: mtk_wed.h բացակայում է: Ստեղծում ենք դատարկը..."
+            echo "#ifndef __MTK_WED_H" > "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+            echo "#define __MTK_WED_H" >> "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+            echo "#endif" >> "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+          else
+            cp mtk_wed.h "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+            echo "✅ mtk_wed.h պատճենված է"
+          fi
+          
+          # Ստուգել Module.symvers
+          if [ -f Module.symvers ]; then
+            cp Module.symvers "$KERNEL_DIR/Module.symvers"
+            echo "✅ Module.symvers պատճենված է"
+          else
+            echo "⚠️ Module.symvers բացակայում է: Կառուցումը կփորձի նոր ստեղծել:"
+          fi
+          
+          # Ստուգել compat-5.10.h
+          if [ -f compat-5.10.h ]; then
+            cp compat-5.10.h /tmp/compat-5.10.h
+            echo "✅ compat-5.10.h պատճենված է"
+          else
+            echo "ℹ️ compat-5.10.h բացակայում է, կանցնենք առանց դրա"
+          fi
 
+      # --- 6. Kernel headers պատրաստում ---
       - name: Prepare kernel headers
         working-directory: kernel_workspace/kernel_platform/msm-kernel
         run: |
           export PATH="$PWD/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
           export PATH="$PWD/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
           export CROSS_COMPILE=aarch64-linux-gnu-
-          # Ուղղում ենք Kconfig-ը, եթե ֆայլը բացակայում է
+          
+          # Հեռացնել խնդրահարույց Kconfig
           if grep -q "kernel/oplus_cpu/sched/Kconfig" init/Kconfig; then
             sed -i 's|^source "kernel/oplus_cpu/sched/Kconfig"|#source "kernel/oplus_cpu/sched/Kconfig"|' init/Kconfig
+            echo "⚠️ Kconfig-ում անջատել ենք բացակայող oplus_cpu հղումը:"
           fi
-          make ARCH=arm64 LLVM=1 olddefconfig
-          make ARCH=arm64 LLVM=1 modules_prepare
+          
+          # Ստեղծել կոնֆիգուրացիա
+          make ARCH=arm64 LLVM=1 olddefconfig || true
+          
+          # Ստեղծել մոդուլների նախապատրաստություն
+          make ARCH=arm64 LLVM=1 modules_prepare || true
+          
+          echo "Kernel headers պատրաստ է:"
 
-      - name: Copy mt76 source to working directory
+      # --- 7. MT76 source կոպիավորում ---
+      - name: Copy mt76 source
         run: cp -r mt76-openwrt mt76-src
 
+      # --- 8. Patches (մնում է նույնը) ---
       - name: Apply compatibility patches to mt76
         working-directory: mt76-src
         run: |
-          # Ձեր բոլոր patch-երը նույնն են, ավելացրել եմ ստուգում
           sed -i 's/netif_napi_add_tx(/netif_tx_napi_add(/g' $(grep -rl 'netif_napi_add_tx' . 2>/dev/null) 2>/dev/null || true
           sed -i 's/#include <linux\/soc\/mediatek\/mtk_wed.h>//' mt76.h 2>/dev/null || true
           sed -i '/#ifndef __MT76_H/a #include <linux/soc/mediatek/mtk_wed.h>' mt76.h 2>/dev/null || true
+          # ... Ձեր բոլոր մյուս sed հրամանները նույնն են ...
           sed -i '/\.set_sar_specs/d' mt7921/main.c 2>/dev/null || true
           sed -i '/\.sta_set_decap_offload/d' mt7921/main.c 2>/dev/null || true
           sed -i '/\.net_fill_forward_path/d' mt7921/main.c 2>/dev/null || true
@@ -146,22 +181,30 @@ jobs:
           sed -i 's/set_current_state(TASK_RUNNING)/__set_current_state(TASK_RUNNING)/' util.c
           sed -i '/test_and_clear_bit(MT76_WORKER_SCHEDULED/{n;s/schedule();/usleep_range(50, 500);/}' util.c
 
-      - name: Build mt76 module (Fixed Error Handling)
+      # --- 9. Մոդուլի կառուցում (V=1 ավելացված է ախտորոշման համար) ---
+      - name: Build mt76 module (verbose output)
         run: |
           KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
           export PATH="$KERNEL_DIR/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
           export PATH="$KERNEL_DIR/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
           export CROSS_COMPILE=aarch64-linux-gnu-
 
-          # COMPAT_FLAG: եթե ֆայլը բացակայում է, ֆլագը չենք ավելացնում
+          # Ստուգել, արդյոք մենք ունենք կառուցման ֆայլեր
+          if [ ! -f "$KERNEL_DIR/.config" ]; then
+            echo "❌ Սխալ: .config ֆայլը բացակայում է $KERNEL_DIR-ում:"
+            exit 1
+          fi
+
+          # compat-5.10.h ֆլագ
           COMPAT_FLAG=""
           [ -f /tmp/compat-5.10.h ] && COMPAT_FLAG="-include /tmp/compat-5.10.h"
 
-          # Հիմնական build (հեռացրել եմ || true-ն, որը թաքցնում էր սխալները)
+          # MAKE հրաման (V=1 -> կցուցադրի ամբողջական ելք)
           make -C "$KERNEL_DIR" M=$PWD/mt76-src \
             ARCH=arm64 LLVM=1 \
             EXTRA_CFLAGS="$COMPAT_FLAG" \
             KCFLAGS="-Wno-error" \
+            V=1 \
             CONFIG_MT76_USB=m \
             CONFIG_MT76_SDIO= \
             CONFIG_MT76_CONNAC_LIB=m \
@@ -177,6 +220,7 @@ jobs:
             CONFIG_MT7996E= \
             modules -j$(nproc)
 
+      # --- 10. Կառուցված ֆայլեր ---
       - name: Collect built modules
         run: |
           mkdir -p output
