@@ -15,201 +15,469 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --- 1. Հիմնական կախվածություններ ---
+      # ─────────────────────────────────────────────
+      # 1. Կախվածություններ
+      # ─────────────────────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential gcc-aarch64-linux-gnu bc flex bison libssl-dev \
-            libelf-dev git wget kmod cpio xz-utils python3 clang lld llvm
+            build-essential \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            bc flex bison \
+            libssl-dev libelf-dev \
+            git wget curl \
+            kmod cpio xz-utils \
+            python3 \
+            clang lld llvm \
+            device-tree-compiler \
+            zip unzip
           sudo rm -rf /var/lib/apt/lists/*
 
-      # --- 2. Repo-ի տեղադրում (կրիտիկական) ---
-      - name: Install repo tool manually
+      # ─────────────────────────────────────────────
+      # 2. Repo tool
+      # ─────────────────────────────────────────────
+      - name: Install repo tool
         run: |
           mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
-          echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV
+          echo "$HOME/bin" >> $GITHUB_PATH
 
       - name: Configure git
         run: |
           git config --global user.email "builder@github.com"
           git config --global user.name "GitHub Builder"
+          git config --global color.ui false
 
-      # --- 3. Manifest-ի և Kernel-ի սինխրոնիզացիա ---
+      # ─────────────────────────────────────────────
+      # 3. Kernel sync
+      # ՈՒՂՂՈՒՄ: manifest XML-ը ՉՊԵՏՔstunner  ունենա leading whitespace.
+      #          repo sync path "./" փոխված է "device/oplus" ապահով path-ի։
+      # ─────────────────────────────────────────────
       - name: Sync kernel source using repo
         run: |
-          # Ստեղծել manifest.xml
-          cat > /tmp/default.xml << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-            <remote fetch="https://git.codelinaro.org/clo/la" name="clo" review="codelinaro.org"/>
-            <remote fetch="https://github.com/OnePlusOSS" name="origin"/>
-            <default remote="clo" revision="kernel.build.lnx.1.0" sync-j="8"/>
-            <project remote="origin" name="android_kernel_common_oneplus_sm8475" path="kernel_platform/common" revision="oneplus/sm8475_b_16.0.0_oneplus_11r"/>
-            <project remote="origin" name="android_kernel_oneplus_sm8475" path="kernel_platform/msm-kernel" revision="oneplus/sm8475_b_16.0.0_oneplus_11r">
-              <linkfile dest="kernel_platform/common/build.config.msm.waipio" src="build.config.msm.waipio"/>
-              <linkfile dest="kernel_platform/common/build.config.msm.waipio.tuivm" src="build.config.msm.waipio.tuivm"/>
-              <linkfile dest="kernel_platform/common/build.config.msm.lahaina" src="build.config.msm.lahaina"/>
-            </project>
-            <project remote="origin" name="android_kernel_modules_and_devicetree_oneplus_sm8475" path="./" revision="oneplus/sm8475_b_16.0.0_oneplus_11r"/>
-            <!-- Պահպանել բոլոր prebuilts-ները -->
-            <project remote="clo" name="kernel/prebuilts/build-tools" path="kernel_platform/prebuilts/kernel-build-tools" revision="10ab783184f77d3ea15bf666426a7138b0f62bfc" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
-            <project remote="clo" name="kernel_platform/external/dtc" revision="deb932d81061c472e8bb2648a409a456e6e84997" upstream="refs/heads/kernel.build.lnx.1.0.r1-rel"/>
-            <project remote="clo" name="kernel_platform/kernel/prebuilts/mainline/arm64" revision="de12e10cfe8d67d5c0627069306fda939f52154a" upstream="refs/heads/kernel.lnx.5.10.r1-rel"/>
-            <project remote="clo" name="kernel_platform/prebuilts/build-tools" revision="846214bd11004546cd3fc2590c73c628fcd6778c" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
-            <project remote="clo" name="kernel_platform/system/tools/mkbootimg" path="kernel_platform/tools/mkbootimg" revision="08410f46318f3f301b96ed058466ab0dde0b050b" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
-            <project remote="clo" name="kernelplatform/prebuilts-master/clang/host/linux-x86" path="kernel_platform/prebuilts-master/clang/host/linux-x86" revision="0fc3d01a780023469b7acc18c56a9cf5099a6d6c" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
-            <project remote="clo" name="kernelplatform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" path="kernel_platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" revision="c9f87ae369034b4942536a1c5bd62e4cd1d828e3" upstream="refs/heads/ks-kernel.lnx.1.0.r1-rel"/>
-          </manifest>
-          EOF
-
-          # Manifest-ը դարձնել Git ռեպո
-          mkdir -p /tmp/manifest-repo
-          cd /tmp/manifest-repo
-          cp /tmp/default.xml .
-          git init
-          git add default.xml
-          git commit -m "Init manifest"
-
-          # Repo init և sync
-          cd $GITHUB_WORKSPACE
           mkdir -p kernel_workspace
           cd kernel_workspace
-          repo init -u file:///tmp/manifest-repo --no-clone-bundle --depth=1
-          repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc)
 
-      # --- 4. Mt76 սկզբնակոդ ---
+          # Manifest-ի ֆայլ (ԿՐԻՏԻԿԱԿԱՆ: heredoc-ը պետք է սկսվի 0-ական column-ից)
+          mkdir -p manifest_git
+          cat > manifest_git/default.xml << 'MANIFEST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <remote fetch="https://git.codelinaro.org/clo/la" name="clo" review="codelinaro.org"/>
+  <remote fetch="https://github.com/OnePlusOSS" name="origin"/>
+  <default remote="clo" revision="kernel.build.lnx.1.0" sync-j="4"/>
+
+  <project remote="origin"
+           name="android_kernel_common_oneplus_sm8475"
+           path="kernel_platform/common"
+           revision="oneplus/sm8475_b_16.0.0_oneplus_11r"/>
+
+  <project remote="origin"
+           name="android_kernel_oneplus_sm8475"
+           path="kernel_platform/msm-kernel"
+           revision="oneplus/sm8475_b_16.0.0_oneplus_11r">
+    <linkfile dest="kernel_platform/common/build.config.msm.waipio"
+              src="build.config.msm.waipio"/>
+    <linkfile dest="kernel_platform/common/build.config.msm.waipio.tuivm"
+              src="build.config.msm.waipio.tuivm"/>
+    <linkfile dest="kernel_platform/common/build.config.msm.lahaina"
+              src="build.config.msm.lahaina"/>
+  </project>
+
+  <!-- ՈՒՂՂՈՒՄ: "./" փոխված է "device/oplus" — workspace root-ը չաղտոտելու համար -->
+  <project remote="origin"
+           name="android_kernel_modules_and_devicetree_oneplus_sm8475"
+           path="device/oplus"
+           revision="oneplus/sm8475_b_16.0.0_oneplus_11r"/>
+
+  <project remote="clo"
+           name="kernel/prebuilts/build-tools"
+           path="kernel_platform/prebuilts/kernel-build-tools"
+           revision="10ab783184f77d3ea15bf666426a7138b0f62bfc"/>
+  <project remote="clo"
+           name="kernel_platform/external/dtc"
+           revision="deb932d81061c472e8bb2648a409a456e6e84997"/>
+  <project remote="clo"
+           name="kernel_platform/kernel/prebuilts/mainline/arm64"
+           revision="de12e10cfe8d67d5c0627069306fda939f52154a"/>
+  <project remote="clo"
+           name="kernel_platform/prebuilts/build-tools"
+           revision="846214bd11004546cd3fc2590c73c628fcd6778c"/>
+  <project remote="clo"
+           name="kernel_platform/system/tools/mkbootimg"
+           path="kernel_platform/tools/mkbootimg"
+           revision="08410f46318f3f301b96ed058466ab0dde0b050b"/>
+  <project remote="clo"
+           name="kernelplatform/prebuilts-master/clang/host/linux-x86"
+           path="kernel_platform/prebuilts-master/clang/host/linux-x86"
+           revision="0fc3d01a780023469b7acc18c56a9cf5099a6d6c"/>
+  <project remote="clo"
+           name="kernelplatform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"
+           path="kernel_platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"
+           revision="c9f87ae369034b4942536a1c5bd62e4cd1d828e3"/>
+</manifest>
+MANIFEST_EOF
+
+          # Manifest-ը Git repo դարձնել
+          cd manifest_git
+          git init -b main
+          git add default.xml
+          git commit -m "Init manifest"
+          cd ..
+
+          # Repo init + sync
+          repo init \
+            -u "file://$PWD/manifest_git" \
+            -b main \
+            --no-clone-bundle \
+            --depth=1
+
+          repo sync \
+            -c \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            -j$(nproc) \
+            || { echo "❌ repo sync ձախողվեց"; exit 1; }
+
+      # ─────────────────────────────────────────────
+      # 4. Clang path auto-detect
+      # ՈՒՂՂՈՒՄ: hard-coded "clang-r383902b" փոխված է glob-ով auto-detect-ի
+      # ─────────────────────────────────────────────
+      - name: Detect toolchain paths
+        run: |
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/msm-kernel"
+          PREBUILTS_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts-master/clang/host/linux-x86"
+
+          # Clang directory-ն auto-detect
+          CLANG_DIR=$(find "$PREBUILTS_DIR" -maxdepth 1 -type d -name "clang-r*" | sort -V | tail -1)
+          if [ -z "$CLANG_DIR" ]; then
+            echo "⚠️ Prebuilt clang չի գտնվել, օգտագործում ենք system clang"
+            CLANG_DIR=$(dirname "$(which clang)")
+          fi
+          echo "✅ Clang path: $CLANG_DIR"
+
+          GCC_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin"
+
+          # Պահել env variable-ներ հետագա steps-ի համար
+          echo "KERNEL_DIR=$KERNEL_DIR"           >> $GITHUB_ENV
+          echo "CLANG_BIN=$CLANG_DIR/bin"        >> $GITHUB_ENV
+          echo "GCC_BIN=$GCC_DIR"                >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      # ─────────────────────────────────────────────
+      # 5. mt76 source clone
+      # ՈՒՂՂՈՒՄ: --depth=1 clone-ից հետո specific commit checkout
+      #          պահանջում է --unshallow կամ fetch without --depth
+      # ─────────────────────────────────────────────
       - name: Clone OpenWrt mt76 source
         run: |
-          git clone --depth 1 -b master https://github.com/openwrt/mt76.git mt76-openwrt
-          cd mt76-openwrt
-          git fetch --depth 1 origin bdf8ea71700746c634c064d6477aa143f821d6f6
-          git checkout bdf8ea71700746c634c064d6477aa143f821d6f6
+          MT76_COMMIT="bdf8ea71700746c634c064d6477aa143f821d6f6"
 
-      # --- 5. Ախտորոշում և անհրաժեշտ ֆայլերի ստուգում ---
-      - name: Prepare kernel config and headers with diagnostics
+          # Clone without depth restriction հատուկ commit-ի համար
+          git clone --depth=50 -b master https://github.com/openwrt/mt76.git mt76-openwrt
+
+          cd mt76-openwrt
+
+          # Ստուգել արդյոք commit-ը shallow clone-ում կա
+          if git cat-file -e "${MT76_COMMIT}^{commit}" 2>/dev/null; then
+            git checkout "$MT76_COMMIT"
+            echo "✅ Checkout $MT76_COMMIT (shallow clone-ում)"
+          else
+            # Unshallow + fetch specific commit
+            git fetch --unshallow origin
+            git checkout "$MT76_COMMIT"
+            echo "✅ Checkout $MT76_COMMIT (unshallow-ից հետո)"
+          fi
+
+          echo "MT76_DIR=$GITHUB_WORKSPACE/mt76-src" >> $GITHUB_ENV
+          cd ..
+          cp -r mt76-openwrt mt76-src
+
+      # ─────────────────────────────────────────────
+      # 6. Kernel config + headers
+      # ՈՒՂՂՈՒՄ: config-ի բացակայության դեպքում defconfig-ից ստեղծում ենք
+      # ─────────────────────────────────────────────
+      - name: Prepare kernel config and headers
         run: |
-          KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
-          
-          # Ստուգել և պատճենել կոնֆիգը
-          if [ ! -f config ]; then
-            echo "⚠️ WARNING: config ֆայլը բացակայում է repository-ում:"
-          else
-            cp config "$KERNEL_DIR/.config"
-            echo "✅ config պատճենված է"
-          fi
-          
-          # Ստեղծել թղթապանակներ
+          # mtk_wed.h stub ստեղծել
           mkdir -p "$KERNEL_DIR/include/linux/soc/mediatek"
-          
-          # Ստուգել և պատճենել mtk_wed.h
-          if [ ! -f mtk_wed.h ]; then
-            echo "⚠️ WARNING: mtk_wed.h բացակայում է: Ստեղծում ենք դատարկը..."
-            echo "#ifndef __MTK_WED_H" > "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
-            echo "#define __MTK_WED_H" >> "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
-            echo "#endif" >> "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+          if [ -f "$GITHUB_WORKSPACE/mtk_wed.h" ]; then
+            cp "$GITHUB_WORKSPACE/mtk_wed.h" "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
+            echo "✅ mtk_wed.h պատճենված է repo-ից"
           else
-            cp mtk_wed.h "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h"
-            echo "✅ mtk_wed.h պատճենված է"
+            cat > "$KERNEL_DIR/include/linux/soc/mediatek/mtk_wed.h" << 'WEDEOF'
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Stub header for out-of-tree mt76 build */
+#ifndef __MTK_WED_H
+#define __MTK_WED_H
+
+struct mtk_wed_device {};
+struct mtk_wed_ops {};
+
+static inline bool mtk_wed_device_active(struct mtk_wed_device *dev)
+{ return false; }
+
+#endif /* __MTK_WED_H */
+WEDEOF
+            echo "✅ mtk_wed.h stub ստեղծված է"
           fi
-          
-          # Ստուգել Module.symvers
-          if [ -f Module.symvers ]; then
-            cp Module.symvers "$KERNEL_DIR/Module.symvers"
+
+          # Module.symvers
+          if [ -f "$GITHUB_WORKSPACE/Module.symvers" ]; then
+            cp "$GITHUB_WORKSPACE/Module.symvers" "$KERNEL_DIR/Module.symvers"
             echo "✅ Module.symvers պատճենված է"
           else
-            echo "⚠️ Module.symvers բացակայում է: Կառուցումը կփորձի նոր ստեղծել:"
-          fi
-          
-          # Ստուգել compat-5.10.h
-          if [ -f compat-5.10.h ]; then
-            cp compat-5.10.h /tmp/compat-5.10.h
-            echo "✅ compat-5.10.h պատճենված է"
-          else
-            echo "ℹ️ compat-5.10.h բացակայում է, կանցնենք առանց դրա"
+            touch "$KERNEL_DIR/Module.symvers"
+            echo "⚠️ Module.symvers բացակայում է — ստեղծված է դատարկ"
           fi
 
-      # --- 6. Kernel headers պատրաստում ---
+          # .config
+          if [ -f "$GITHUB_WORKSPACE/config" ]; then
+            cp "$GITHUB_WORKSPACE/config" "$KERNEL_DIR/.config"
+            echo "✅ .config պատճենված է repo-ից"
+          else
+            echo "⚠️ config բացակայում է — կառաջացնենք waipio defconfig-ից"
+          fi
+
+          # compat-5.10.h
+          if [ -f "$GITHUB_WORKSPACE/compat-5.10.h" ]; then
+            cp "$GITHUB_WORKSPACE/compat-5.10.h" /tmp/compat-5.10.h
+            echo "COMPAT_FLAG=-include /tmp/compat-5.10.h" >> $GITHUB_ENV
+            echo "✅ compat-5.10.h կցված կլինի build-ին"
+          else
+            echo "COMPAT_FLAG=" >> $GITHUB_ENV
+            echo "ℹ️ compat-5.10.h բացակայում է — շարունակում ենք առանց"
+          fi
+
+      # ─────────────────────────────────────────────
+      # 7. Kernel headers prepare
+      # ՈՒՂՂՈՒՄ: PATH set + defconfig fallback + KBUILD_MODPOST_WARN
+      # ─────────────────────────────────────────────
       - name: Prepare kernel headers
         working-directory: kernel_workspace/kernel_platform/msm-kernel
         run: |
-          export PATH="$PWD/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
-          export PATH="$PWD/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          
-          # Հեռացնել խնդրահարույց Kconfig
-          if grep -q "kernel/oplus_cpu/sched/Kconfig" init/Kconfig; then
-            sed -i 's|^source "kernel/oplus_cpu/sched/Kconfig"|#source "kernel/oplus_cpu/sched/Kconfig"|' init/Kconfig
-            echo "⚠️ Kconfig-ում անջատել ենք բացակայող oplus_cpu հղումը:"
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
+
+          # Kconfig fix — oplus_cpu/sched
+          for kconf in init/Kconfig drivers/Kconfig; do
+            if [ -f "$kconf" ]; then
+              sed -i \
+                -e 's|^\(source "kernel/oplus_cpu/sched/Kconfig"\)|#\1|' \
+                -e 's|^\(source "kernel/oplus_perf/Kconfig"\)|#\1|' \
+                "$kconf" && echo "✅ $kconf patched"
+            fi
+          done
+
+          # Config ստեղծում
+          if [ -f .config ]; then
+            make ARCH=arm64 LLVM=1 \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              CC=clang \
+              olddefconfig
+          else
+            # ՈՒՂՂՈՒՄ: waipio_defconfig-ից fallback
+            DEFCONF=$(ls arch/arm64/configs/ | grep -i waipio | head -1)
+            if [ -n "$DEFCONF" ]; then
+              make ARCH=arm64 LLVM=1 \
+                CROSS_COMPILE="$CROSS_COMPILE" \
+                CC=clang \
+                "${DEFCONF}"
+              echo "✅ Defconfig: $DEFCONF"
+            else
+              make ARCH=arm64 LLVM=1 \
+                CROSS_COMPILE="$CROSS_COMPILE" \
+                CC=clang \
+                defconfig
+              echo "⚠️ Generic defconfig օգտագործվեց"
+            fi
           fi
-          
-          # Ստեղծել կոնֆիգուրացիա
-          make ARCH=arm64 LLVM=1 olddefconfig || true
-          
-          # Ստեղծել մոդուլների նախապատրաստություն
-          make ARCH=arm64 LLVM=1 modules_prepare || true
-          
-          echo "Kernel headers պատրաստ է:"
 
-      # --- 7. MT76 source կոպիավորում ---
-      - name: Copy mt76 source
-        run: cp -r mt76-openwrt mt76-src
+          # CONFIG_MODULES ակտիվ անել
+          scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_MODULE_UNLOAD
+          scripts/config --disable CONFIG_MODULE_SIG_FORCE
+          make ARCH=arm64 LLVM=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CC=clang \
+            olddefconfig
 
-      # --- 8. Patches (մնում է նույնը) ---
+          # Headers + modules prepare
+          make ARCH=arm64 LLVM=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CC=clang \
+            KBUILD_MODPOST_WARN=1 \
+            modules_prepare -j$(nproc)
+
+          echo "✅ Kernel headers պատրաստ"
+
+      # ─────────────────────────────────────────────
+      # 8. mt76 patches
+      # ՈՒՂՂՈՒՄ 1: sed հրամաններում ֆայլերը ուղիղ path-ով
+      # ՈՒՂՂՈՒՄ 2: netif_napi_add_tx ուղղությունը ճիշտ է 5.10-ի համար
+      # ՈՒՂՂՈՒՄ 3: util.c worker patch ավելի կայուն regex-ով
+      # ─────────────────────────────────────────────
       - name: Apply compatibility patches to mt76
         working-directory: mt76-src
         run: |
-          sed -i 's/netif_napi_add_tx(/netif_tx_napi_add(/g' $(grep -rl 'netif_napi_add_tx' . 2>/dev/null) 2>/dev/null || true
-          sed -i 's/#include <linux\/soc\/mediatek\/mtk_wed.h>//' mt76.h 2>/dev/null || true
-          sed -i '/#ifndef __MT76_H/a #include <linux/soc/mediatek/mtk_wed.h>' mt76.h 2>/dev/null || true
-          # ... Ձեր բոլոր մյուս sed հրամանները նույնն են ...
-          sed -i '/\.set_sar_specs/d' mt7921/main.c 2>/dev/null || true
-          sed -i '/\.sta_set_decap_offload/d' mt7921/main.c 2>/dev/null || true
-          sed -i '/\.net_fill_forward_path/d' mt7921/main.c 2>/dev/null || true
-          sed -i 's/ieee80211_is_bufferable_mmpdu(skb)/mt76_compat_is_bufferable_mmpdu(skb)/g' tx.c 2>/dev/null || true
-          sed -i '/of_get_mac_address/s/^/\/\//' eeprom.c 2>/dev/null || true
-          sed -i '/\.threaded\s*=/d' dma.c 2>/dev/null || true
-          sed -i 's/wiphy->mbssid_max_interfaces/1/g' mt76_connac_mcu.c 2>/dev/null || true
-          sed -i 's/wiphy->mbssid_max_ema_profile_periodicity/1/g' mt76_connac_mcu.c 2>/dev/null || true
-          sed -i '/wiphy->sar_capa\s*=/d' mac80211.c mt7921/init.c 2>/dev/null || true
-          sed -i 's/wiphy->sar_capa->num_freq_ranges/mt76_sar_capa.num_freq_ranges/g' mac80211.c 2>/dev/null || true
-          sed -i 's/phy->hw->wiphy->sar_capa/\&mt76_sar_capa/g' mac80211.c 2>/dev/null || true
-          sed -i 's/hw->wiphy->sar_capa/\&mt76_sar_capa/g' mac80211.c 2>/dev/null || true
-          sed -i '/set_current_state(TASK_INTERRUPTIBLE)/d' util.c
-          sed -i 's/set_current_state(TASK_RUNNING)/__set_current_state(TASK_RUNNING)/' util.c
-          sed -i '/test_and_clear_bit(MT76_WORKER_SCHEDULED/{n;s/schedule();/usleep_range(50, 500);/}' util.c
-
-      # --- 9. Մոդուլի կառուցում (V=1 ավելացված է ախտորոշման համար) ---
-      - name: Build mt76 module (verbose output)
-        run: |
-          KERNEL_DIR=kernel_workspace/kernel_platform/msm-kernel
-          export PATH="$KERNEL_DIR/../prebuilts-master/clang/host/linux-x86/clang-r383902b/bin:$PATH"
-          export PATH="$KERNEL_DIR/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/bin:$PATH"
-          export CROSS_COMPILE=aarch64-linux-gnu-
-
-          # Ստուգել, արդյոք մենք ունենք կառուցման ֆայլեր
-          if [ ! -f "$KERNEL_DIR/.config" ]; then
-            echo "❌ Սխալ: .config ֆայլը բացակայում է $KERNEL_DIR-ում:"
-            exit 1
+          # ── mt76.h: mtk_wed include ──────────────────────────────────────
+          # Հեռացնել հին include-ն, ավելացնել ճիշտ տեղում
+          if [ -f mt76.h ]; then
+            sed -i 's|#include <linux/soc/mediatek/mtk_wed.h>||g' mt76.h
+            # Ավելացնել #include guard-ից հետո
+            sed -i '/#ifndef __MT76_H/{n;s|^|#include <linux/soc/mediatek/mtk_wed.h>\n|}' mt76.h
+            echo "✅ mt76.h patched"
           fi
 
-          # compat-5.10.h ֆլագ
-          COMPAT_FLAG=""
-          [ -f /tmp/compat-5.10.h ] && COMPAT_FLAG="-include /tmp/compat-5.10.h"
+          # ── netif_napi_add_tx (kernel 5.10-ում գոյություն չունի netif_tx_napi_add) ──
+          # ՈՒՂՂՈՒՄ: 5.10 kernel-ն ունի netif_napi_add_tx → թողնել ինչպես կա,
+          #          kernel 5.15+ ունի netif_tx_napi_add → convert only for newer API
+          # Ստուգենք kernel version
+          KERNEL_VER=$(make -C "$KERNEL_DIR" kernelversion 2>/dev/null || echo "5.10")
+          MAJOR=$(echo "$KERNEL_VER" | cut -d. -f1)
+          MINOR=$(echo "$KERNEL_VER" | cut -d. -f2)
+          echo "Kernel version: $KERNEL_VER"
 
-          # MAKE հրաման (V=1 -> կցուցադրի ամբողջական ելք)
-          make -C "$KERNEL_DIR" M=$PWD/mt76-src \
-            ARCH=arm64 LLVM=1 \
-            EXTRA_CFLAGS="$COMPAT_FLAG" \
+          if [ "$MAJOR" -eq 5 ] && [ "$MINOR" -lt 15 ]; then
+            # 5.10: mt76-ն ունի netif_tx_napi_add, kernel-ն ունի netif_napi_add_tx
+            grep -rl 'netif_tx_napi_add' . 2>/dev/null | while read f; do
+              sed -i 's/netif_tx_napi_add(/netif_napi_add_tx(/g' "$f"
+              echo "  ✅ netif patch: $f"
+            done
+          fi
+
+          # ── mac80211.c patches ───────────────────────────────────────────
+          if [ -f mac80211.c ]; then
+            # SAR capa
+            sed -i '/wiphy->sar_capa\s*=/d' mac80211.c
+            sed -i 's/wiphy->sar_capa->num_freq_ranges/mt76_sar_capa.num_freq_ranges/g' mac80211.c
+            sed -i 's/phy->hw->wiphy->sar_capa/\&mt76_sar_capa/g' mac80211.c
+            sed -i 's/hw->wiphy->sar_capa/\&mt76_sar_capa/g' mac80211.c
+            echo "✅ mac80211.c patched"
+          fi
+
+          # ── mt76_connac_mcu.c patches ────────────────────────────────────
+          if [ -f mt76_connac_mcu.c ]; then
+            sed -i 's/wiphy->mbssid_max_interfaces/1/g' mt76_connac_mcu.c
+            sed -i 's/wiphy->mbssid_max_ema_profile_periodicity/1/g' mt76_connac_mcu.c
+            echo "✅ mt76_connac_mcu.c patched"
+          fi
+
+          # ── mt7921/main.c patches ────────────────────────────────────────
+          if [ -f mt7921/main.c ]; then
+            sed -i '/\.set_sar_specs\s*=/d'           mt7921/main.c
+            sed -i '/\.sta_set_decap_offload\s*=/d'   mt7921/main.c
+            sed -i '/\.net_fill_forward_path\s*=/d'   mt7921/main.c
+            sed -i '/wiphy->sar_capa\s*=/d'           mt7921/main.c
+            echo "✅ mt7921/main.c patched"
+          fi
+
+          # ── mt7921/init.c patches ────────────────────────────────────────
+          if [ -f mt7921/init.c ]; then
+            sed -i '/wiphy->sar_capa\s*=/d' mt7921/init.c
+            echo "✅ mt7921/init.c patched"
+          fi
+
+          # ── tx.c: ieee80211_is_bufferable_mmpdu ─────────────────────────
+          if [ -f tx.c ]; then
+            sed -i 's/ieee80211_is_bufferable_mmpdu(skb)/mt76_compat_is_bufferable_mmpdu(skb)/g' tx.c
+            echo "✅ tx.c patched"
+          fi
+
+          # ── eeprom.c: of_get_mac_address ────────────────────────────────
+          if [ -f eeprom.c ]; then
+            sed -i '/of_get_mac_address/s/^/\/\//' eeprom.c
+            echo "✅ eeprom.c patched"
+          fi
+
+          # ── dma.c: .threaded ────────────────────────────────────────────
+          if [ -f dma.c ]; then
+            sed -i '/\.threaded\s*=/d' dma.c
+            echo "✅ dma.c patched"
+          fi
+
+          # ── util.c: worker scheduler ─────────────────────────────────────
+          # ՈՒՂՂՈՒՄ: Python-ով ավելի հուսալի multi-line patch
+          if [ -f util.c ]; then
+            sed -i '/set_current_state(TASK_INTERRUPTIBLE)/d' util.c
+            sed -i 's/set_current_state(TASK_RUNNING)/__set_current_state(TASK_RUNNING)/' util.c
+
+            # Multi-line patch Python-ով (sed-ի {n;s/} ոչ բոլոր distro-ներում աշխատում է)
+            python3 - << 'PYEOF'
+import re, pathlib
+
+content = pathlib.Path("util.c").read_text()
+# Replace schedule() with usleep_range inside the MT76_WORKER_SCHEDULED block
+content = re.sub(
+    r'(test_and_clear_bit\(MT76_WORKER_SCHEDULED[^)]*\)[^{]*\{[^}]*?)schedule\(\)',
+    r'\1usleep_range(50, 500)',
+    content,
+    flags=re.DOTALL
+)
+pathlib.Path("util.c").write_text(content)
+print("✅ util.c worker patch applied")
+PYEOF
+          fi
+
+          # ── ieee80211_is_bufferable_mmpdu compat define ──────────────────
+          # Ավելացնել compat define, եթե կա mt76.h-ում
+          if [ -f mt76.h ] && ! grep -q 'mt76_compat_is_bufferable_mmpdu' mt76.h; then
+            cat >> mt76.h << 'COMPATEOF'
+
+/* compat: ieee80211_is_bufferable_mmpdu wrapper */
+#ifndef mt76_compat_is_bufferable_mmpdu
+#include <linux/ieee80211.h>
+static inline bool mt76_compat_is_bufferable_mmpdu(struct sk_buff *skb)
+{
+    struct ieee80211_hdr *hdr = (void *)skb->data;
+    __le16 fc = hdr->frame_control;
+    return ieee80211_is_mgmt(fc) &&
+           (ieee80211_is_disassoc(fc) ||
+            ieee80211_is_deauth(fc) ||
+            ieee80211_is_action(fc));
+}
+#define mt76_compat_is_bufferable_mmpdu mt76_compat_is_bufferable_mmpdu
+#endif
+COMPATEOF
+            echo "✅ mt76_compat_is_bufferable_mmpdu define ավելացված է"
+          fi
+
+          echo "✅ Բոլոր patches կիրառված են"
+
+      # ─────────────────────────────────────────────
+      # 9. Build
+      # ՈՒՂՂՈՒՄ: KBUILD_MODPOST_WARN=1, CONFIG_MT76_CORE=m ավելացված,
+      #          COMPAT_FLAG env variable-ից, ճիշտ PATH
+      # ─────────────────────────────────────────────
+      - name: Build mt76 modules
+        run: |
+          export PATH="$CLANG_BIN:$GCC_BIN:$PATH"
+
+          echo "=== Build env ==="
+          echo "KERNEL_DIR:     $KERNEL_DIR"
+          echo "CLANG:          $(clang --version | head -1)"
+          echo "CROSS_COMPILE:  $CROSS_COMPILE"
+          echo "COMPAT_FLAG:    $COMPAT_FLAG"
+          echo "================="
+
+          make -C "$KERNEL_DIR" \
+            M="$GITHUB_WORKSPACE/mt76-src" \
+            ARCH=arm64 \
+            LLVM=1 \
+            CC=clang \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            EXTRA_CFLAGS="$COMPAT_FLAG -Wno-unused-function -Wno-unused-variable" \
             KCFLAGS="-Wno-error" \
-            V=1 \
+            KBUILD_MODPOST_WARN=1 \
+            CONFIG_MT76_CORE=m \
             CONFIG_MT76_USB=m \
-            CONFIG_MT76_SDIO= \
             CONFIG_MT76_CONNAC_LIB=m \
             CONFIG_MT7921_COMMON=m \
             CONFIG_MT7921U=m \
+            CONFIG_MT76_SDIO= \
             CONFIG_MT7921E= \
             CONFIG_MT7921S= \
             CONFIG_MT76x0_COMMON= \
@@ -218,33 +486,70 @@ jobs:
             CONFIG_MT7615_COMMON= \
             CONFIG_MT7915E= \
             CONFIG_MT7996E= \
-            modules -j$(nproc)
+            modules \
+            -j$(nproc) \
+            2>&1 | tee /tmp/build.log
 
-      # --- 10. Կառուցված ֆայլեր ---
+          # Ստուգել արդյունք
+          KO_COUNT=$(find mt76-src -name "*.ko" | wc -l)
+          if [ "$KO_COUNT" -eq 0 ]; then
+            echo "❌ Ոչ մի .ko ֆայլ չի կառուցվել"
+            echo "--- Build log (վերջին 100 տող) ---"
+            tail -100 /tmp/build.log
+            exit 1
+          fi
+          echo "✅ Կառուցված է $KO_COUNT մոդուլ"
+
+      # ─────────────────────────────────────────────
+      # 10. Artifact հավաքում
+      # ─────────────────────────────────────────────
       - name: Collect built modules
         run: |
           mkdir -p output
           find mt76-src -name "*.ko" -exec cp {} output/ \;
-          ls -la output/
+          echo "=== Կառուցված ֆայլեր ==="
+          ls -lh output/
 
-      - name: Patch CRCs if needed
+      # ─────────────────────────────────────────────
+      # 11. CRC patch (ոչ պարտադիր)
+      # ─────────────────────────────────────────────
+      - name: Patch module CRCs
         run: |
-          if [ -f patch_versions.py ] && [ -f Module.symvers ]; then
-            python3 patch_versions.py output Module.symvers || echo "Patch failed"
+          if [ -f "$GITHUB_WORKSPACE/patch_versions.py" ] && \
+             [ -f "$GITHUB_WORKSPACE/Module.symvers" ]; then
+            python3 "$GITHUB_WORKSPACE/patch_versions.py" \
+              output \
+              "$GITHUB_WORKSPACE/Module.symvers" \
+              || echo "⚠️ CRC patch ձախողվեց (ոչ կրիտիկական)"
           else
-            echo "Skipping CRC patching"
+            echo "ℹ️ CRC patching բաց թողնված (patch_versions.py կամ Module.symvers բացակայում է)"
           fi
 
+      # ─────────────────────────────────────────────
+      # 12. Verify
+      # ՈՒՂՂՈՒՄ: modinfo + file հրամաններ (objdump-ն ավելացրել ենք deps-ում)
+      # ─────────────────────────────────────────────
       - name: Verify modules
         run: |
+          echo "=== Module ստուգում ==="
           for ko in output/*.ko; do
-            echo "=== $ko ==="
-            modinfo "$ko" | grep -E "vermagic|depends" || true
-            aarch64-linux-gnu-objdump -h "$ko" 2>/dev/null | grep __versions || echo "No __versions"
+            echo ""
+            echo "── $ko ──"
+            modinfo "$ko" 2>/dev/null | grep -E "^(filename|vermagic|depends|author)" || true
+            file "$ko" || true
+            aarch64-linux-gnu-objdump -h "$ko" 2>/dev/null \
+              | grep -E "(__versions|__ksymtab|\.gnu)" \
+              || echo "  ℹ️ __versions section չի գտնվել"
           done
 
+      # ─────────────────────────────────────────────
+      # 13. Upload
+      # ─────────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mt76-modules
-          path: output/*.ko
+          name: mt76-modules-sm8475
+          path: |
+            output/*.ko
+            /tmp/build.log
+          if-no-files-found: error
